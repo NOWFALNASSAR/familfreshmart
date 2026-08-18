@@ -57,15 +57,27 @@ Then run `vercel --prod` once more. Open the link it prints.
 ## Sign-in
 | User | Role | PIN |
 |---|---|---|
-| Nowfal | OWNER | 1111 |
+| Admin | ADMIN | 1111 |
 | Manager | MANAGER | 2222 |
-| Cashier | CASHIER | 3333 |
+| Billing | BILLING | 3333 |
+
+Admin can do everything including managing staff. Manager can back-date, delete and reopen days.
+Billing can only enter and close today.
 
 **Change all three on day one.** Owner can add more staff later.
 
+## Updating an existing installation
+If your database was created before this version, run `db/migrate-v3.sql` once in the Neon
+SQL Editor. It renames the roles. Skip this on a fresh install — `db/schema.sql` already has them.
+
+## Bulk upload
+Entry → Bulk upload. CSV columns: date, type, party, amount, mode, category, reference.
+See `db/sample-bulk.csv`. Supplier and customer names must already exist in the app.
+
 ## What it enforces
 - A closed day cannot be written to — the database itself refuses, not just the screen.
-- Cashiers cannot delete entries, reopen days, or change settings.
+- Billing staff cannot back-date, delete entries, reopen days, or change settings.
+- Nobody can enter a future date.
 - Every entry, deletion, closing and reopening is written to the activity log with who and when.
 - Counted cash at closing becomes the next day's opening cash automatically.
 

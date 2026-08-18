@@ -50,8 +50,8 @@ export default function Page() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const run = async (action, payload, msg) => {
-    try { await post(action, payload); await refresh(); if (msg) say(msg); setSheet(null); }
+  const run = async (action, payload, msg, keepOpen) => {
+    try { await post(action, payload); await refresh(); if (msg) say(msg); if (!keepOpen) setSheet(null); }
     catch (e) { say(e.message); }
   };
 
@@ -84,8 +84,10 @@ export default function Page() {
           <div className="brand">{settings.shop_name.split(' ')[0]} <span>{settings.shop_name.split(' ').slice(1).join(' ')}</span></div>
           <div className="sub">{me.role.toLowerCase()} · {me.name}</div>
         </div>
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-          style={{ width: 158, padding: '9px 10px', fontSize: 13 }} />
+        {me.role === 'BILLING'
+          ? <div className="pill" style={{ padding: '9px 12px' }}>{dshow(date)} · today only</div>
+          : <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)}
+              style={{ width: 158, padding: '9px 10px', fontSize: 13 }} />}
       </header>
 
       <div className="wrap">
@@ -107,7 +109,9 @@ export default function Page() {
 
       {sheet && (sheet === 'party'
         ? <PartyForm c={c} close={() => setSheet(null)} />
-        : <TxnForm c={c} type={sheet} close={() => setSheet(null)} />)}
+        : sheet === 'bulk'
+          ? <BulkForm c={c} close={() => setSheet(null)} />
+          : <TxnForm c={c} type={sheet} close={() => setSheet(null)} />)}
       {toast && <div className="toast">{toast}</div>}
     </>
   );
@@ -219,7 +223,7 @@ function TxRow({ t, c }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <span className="v" style={{ color: inflow ? 'var(--leaf)' : 'var(--beet)' }}>
           {inflow ? '+' : '−'}{money(t.amount)}</span>
-        {!c.dayLocked && c.me.role !== 'CASHIER' && (
+        {!c.dayLocked && c.me.role !== 'BILLING' && (
           <button className="pill" onClick={() => c.run('deleteEntry', { id: t.id }, 'Entry deleted')}>del</button>
         )}
       </div>
@@ -238,6 +242,7 @@ function Entry(c) {
     ['cash_in', 'Cash in', 'Owner deposit'],
     ['cash_out', 'Cash out', 'Bank drop, withdrawal'],
     ['party', 'Add supplier / customer', 'New name in the book'],
+    ['bulk', 'Bulk upload', 'Many entries from a CSV file'],
   ];
   return (
     <>
@@ -278,6 +283,8 @@ function TxnForm({ c, type, close }) {
   const [ref, setRef] = useState('');
   const [remarks, setRemarks] = useState('');
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(0);
+  const [lastAmt, setLastAmt] = useState(0);
 
   const amt = parseFloat(amount) || 0;
   const out = useMemo(() => outstanding(c, Number(partyId)), [c, partyId]);
@@ -285,10 +292,15 @@ function TxnForm({ c, type, close }) {
 
   const save = async () => {
     setBusy(true);
+    const before = c.entries.length;
     await c.run('entry',
       { type, date: c.date, partyId: needsParty ? Number(partyId) : null, amount: amt, mode, category: type === 'expense' ? category : null, ref, remarks },
-      LABEL[type] + ' saved');
+      null, true);
     setBusy(false);
+    setSaved((n) => n + 1);
+    setLastAmt(amt);
+    setAmount(''); setRef(''); setRemarks('');
+    void before;
   };
 
   return (
@@ -348,7 +360,17 @@ function TxnForm({ c, type, close }) {
         </div>
 
         <button className="btn" disabled={!ok || busy} onClick={save}>
-          {busy ? 'Saving…' : 'Save ' + LABEL[type].toLowerCase()}
+          {busy ? 'Saving…' : 'Save and enter next'}
+        </button>
+
+        {saved > 0 && (
+          <p className="k" style={{ textAlign: 'center', marginTop: 12 }}>
+            {saved} {saved === 1 ? 'entry' : 'entries'} saved · last {money(lastAmt)}
+          </p>
+        )}
+
+        <button className="btn ghost" style={{ marginTop: 10 }} onClick={close}>
+          {saved > 0 ? 'Done' : 'Cancel'}
         </button>
       </div>
     </div>
@@ -387,6 +409,112 @@ function PartyForm({ c, close }) {
 }
 
 /* --------------------------------- parties -------------------------------- */
+function BulkForm({ c, close }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const parsed = useMemo(() => {
+    const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
+    if (!lines.length) return { rows: [], problems: [] };
+    const head = lines[0].toLowerCase();
+    const body = head.includes('date') && head.includes('amount') ? lines.slice(1) : lines;
+    const rows = [];
+    const problems = [];
+    body.forEach((line, i) => {
+      const cell = line.split(',').map((x) => x.trim().replace(/^"|"$/g, ''));
+      const [date, type, partyName, amount, mode, category, ref] = cell;
+      const n = i + (body.length === lines.length ? 1 : 2);
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return problems.push(`Line ${n}: date must look like 2026-08-18`);
+      if (!LABEL[type]) return problems.push(`Line ${n}: type "${type}" is not valid`);
+      if (!(parseFloat(amount) > 0)) return problems.push(`Line ${n}: amount is missing`);
+      if (!MODES.includes((mode || '').toLowerCase())) return problems.push(`Line ${n}: mode must be one of ${MODES.join(', ')}`);
+      let partyId = null;
+      if (partyName) {
+        const p = c.parties.find((x) => x.name.toLowerCase() === partyName.toLowerCase());
+        if (!p) return problems.push(`Line ${n}: "${partyName}" is not in your supplier or customer list`);
+        partyId = p.id;
+      }
+      rows.push({ date, type, partyId, amount: parseFloat(amount), mode: mode.toLowerCase(), category: category || null, ref: ref || null });
+    });
+    return { rows, problems };
+  }, [text, c.parties]);
+
+  const total = parsed.rows.reduce((a, r) => a + r.amount, 0);
+
+  const readFile = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => setText(String(r.result));
+    r.readAsText(f);
+  };
+
+  const upload = async () => {
+    setBusy(true);
+    await c.run('bulk', { rows: parsed.rows }, `${parsed.rows.length} entries uploaded`);
+    setBusy(false);
+  };
+
+  return (
+    <div className="sheet" onClick={close}>
+      <div className="sheetin" onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div><div className="brand" style={{ fontSize: 18 }}>Bulk upload</div>
+            <div className="sub">Past days from a CSV</div></div>
+          <button className="pill" onClick={close}>Close</button>
+        </div>
+
+        <div className="warn" style={{ marginTop: 0 }}>
+          One row per entry, columns in this order:<br />
+          <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
+            date, type, party, amount, mode, category, reference
+          </span><br />
+          Example: <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
+            2026-08-14, sale, Walk-in customer, 42000, cash, ,
+          </span><br />
+          Types: sale, purchase, supplier_payment, customer_collection, expense, cash_in, cash_out.
+          Supplier and customer names must already exist in the app, spelled the same.
+        </div>
+
+        <div className="f" style={{ marginTop: 14 }}>
+          <label className="lbl">Choose a CSV file</label>
+          <input type="file" accept=".csv,text/csv" onChange={readFile} style={{ padding: 10 }} />
+        </div>
+
+        <div className="f">
+          <label className="lbl">Or paste the rows here</label>
+          <textarea rows={7} value={text} onChange={(e) => setText(e.target.value)}
+            placeholder="2026-08-14, sale, Walk-in customer, 42000, cash, ,"
+            style={{ fontFamily: 'var(--mono)', fontSize: 13 }} />
+        </div>
+
+        {parsed.problems.length > 0 && (
+          <div className="warn">
+            <b>Fix these first</b>
+            {parsed.problems.slice(0, 8).map((p, i) => <div key={i}>{p}</div>)}
+            {parsed.problems.length > 8 && <div>…and {parsed.problems.length - 8} more</div>}
+          </div>
+        )}
+
+        {parsed.rows.length > 0 && (
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="rowb"><span className="k">Rows ready</span><span className="v">{parsed.rows.length}</span></div>
+            <div className="rowb"><span className="k">Total value</span><span className="v">{money(total)}</span></div>
+          </div>
+        )}
+
+        <button className="btn" style={{ marginTop: 14 }}
+          disabled={busy || !parsed.rows.length || parsed.problems.length > 0} onClick={upload}>
+          {busy ? 'Uploading…' : `Upload ${parsed.rows.length || ''} entries`}
+        </button>
+        <p className="empty" style={{ fontSize: 12 }}>
+          Closed days are refused. Reopen a day first if you need to add to it.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function Parties(c) {
   const [kind, setKind] = useState('supplier');
   const [open, setOpen] = useState(null);
@@ -491,7 +619,7 @@ function DayClose(c) {
       {c.dayLocked ? (
         <>
           <div className="warn">Closed by {c.closing.closed_by}. Entries for this date are locked.</div>
-          {c.me.role !== 'CASHIER' && <button className="btn ghost" style={{ marginTop: 12 }} onClick={reopen}>Reopen day</button>}
+          {c.me.role !== 'BILLING' && <button className="btn ghost" style={{ marginTop: 12 }} onClick={reopen}>Reopen day</button>}
         </>
       ) : (
         <button className="btn" style={{ marginTop: 14 }} disabled={counted === 0}
@@ -581,6 +709,63 @@ function Reports(c) {
   );
 }
 
+function Staff({ c }) {
+  const [name, setName] = useState('');
+  const [role, setRole] = useState('BILLING');
+  const [pin, setPin] = useState('');
+  const users = c.data.users || [];
+
+  const add = () => {
+    c.run('addUser', { name: name.trim(), role, pin }, name.trim() + ' can now sign in');
+    setName(''); setPin('');
+  };
+
+  const reset = (u) => {
+    const p = window.prompt(`New PIN for ${u.name} (4 to 6 digits)`);
+    if (p) c.run('resetPin', { userId: u.id, pin: p }, 'PIN reset');
+  };
+
+  const remove = (u) => {
+    if (window.confirm(`Remove access for ${u.name}? Their past entries stay in the records.`))
+      c.run('removeUser', { userId: u.id }, 'Access removed');
+  };
+
+  return (
+    <div style={{ marginTop: 26, borderTop: '1px solid var(--line)', paddingTop: 18 }}>
+      <span className="lbl">Staff who can sign in</span>
+      {users.map((u) => (
+        <div className="item" key={u.id}>
+          <div><b style={{ fontSize: 14 }}>{u.name}</b><small>{u.role.toLowerCase()}</small></div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="pill" onClick={() => reset(u)}>reset PIN</button>
+            {u.id !== c.me.id && <button className="pill" onClick={() => remove(u)}>remove</button>}
+          </div>
+        </div>
+      ))}
+
+      <div style={{ marginTop: 18 }}>
+        <span className="lbl">Add someone</span>
+        <div className="f"><input value={name} placeholder="Name"
+          onChange={(e) => setName(e.target.value)} /></div>
+        <div className="f">
+          <div className="tabs" style={{ padding: 0 }}>
+            {['MANAGER', 'BILLING', 'ADMIN'].map((r) => (
+              <button key={r} className={'tab' + (role === r ? ' on' : '')} onClick={() => setRole(r)}>
+                {r.toLowerCase()}</button>))}
+          </div>
+        </div>
+        <div className="f"><input inputMode="numeric" value={pin} placeholder="PIN — 4 to 6 digits"
+          onChange={(e) => setPin(e.target.value)} /></div>
+        <button className="btn ghost" disabled={!name.trim() || !pin} onClick={add}>Add staff</button>
+        <p className="empty" style={{ fontSize: 12, padding: '10px 0 0' }}>
+          Billing can enter and close today only; they cannot back-date, delete, reopen a day, or change settings.
+          Managers and admin can. Give one login per person — a shared login makes the activity log worthless.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function SettingsCard({ c }) {
   const [form, setForm] = useState({
     shop_name: c.settings.shop_name, gp_method: c.settings.gp_method,
@@ -626,6 +811,8 @@ function SettingsCard({ c }) {
           Change PIN
         </button>
       </div>
+
+      {c.me.role === 'ADMIN' && <Staff c={c} />}
 
       <button className="btn ghost" style={{ marginTop: 22 }} onClick={logout}>Sign out</button>
       <p className="empty" style={{ fontSize: 12, padding: '10px 0 0' }}>

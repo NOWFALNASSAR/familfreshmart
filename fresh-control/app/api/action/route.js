@@ -17,6 +17,8 @@ export async function POST(req) {
         const { type, date, partyId, amount, mode, category, ref, remarks } = payload;
         const amt = Number(amount);
         if (!(amt > 0)) return bad('Amount must be more than zero.');
+        const err = dateAllowed(me, date);
+        if (err) return bad(err);
         await sql`
           INSERT INTO entries (type, biz_date, party_id, amount, mode, category, ref_no, remarks, created_by)
           VALUES (${type}, ${date}, ${partyId || null}, ${amt}, ${mode},
@@ -26,7 +28,7 @@ export async function POST(req) {
       }
 
       case 'deleteEntry': {
-        if (me.role === 'CASHIER') return bad('Cashiers cannot delete entries.');
+        if (me.role === 'BILLING') return bad('Billing staff cannot delete entries.');
         const rows = await sql`SELECT * FROM entries WHERE id = ${payload.id}`;
         if (!rows[0]) return bad('Entry not found.');
         const closed = await sql`SELECT status FROM closings WHERE biz_date = ${rows[0].biz_date}`;
@@ -61,7 +63,7 @@ export async function POST(req) {
       }
 
       case 'reopen': {
-        if (me.role === 'CASHIER') return bad('Only a manager or owner can reopen a day.');
+        if (me.role === 'BILLING') return bad('Only a manager or admin can reopen a day.');
         if (!payload.reason) return bad('A reason is needed to reopen a day.');
         await sql`UPDATE closings SET status = 'REOPENED' WHERE biz_date = ${payload.date}`;
         await log(me.name, `Reopened ${payload.date} — ${payload.reason}`);
@@ -69,7 +71,7 @@ export async function POST(req) {
       }
 
       case 'settings': {
-        if (me.role === 'CASHIER') return bad('Cashiers cannot change settings.');
+        if (me.role === 'BILLING') return bad('Billing staff cannot change settings.');
         await sql`
           UPDATE settings SET shop_name = ${payload.shop_name}, gp_method = ${payload.gp_method},
             gp_rate = ${Number(payload.gp_rate)}, cash_alert = ${Number(payload.cash_alert)} WHERE id = 1`;
@@ -86,12 +88,50 @@ export async function POST(req) {
       }
 
       case 'addUser': {
-        if (me.role !== 'OWNER') return bad('Only the owner can add staff.');
+        if (me.role !== 'ADMIN') return bad('Only an admin can add staff.');
         if (!/^\d{4,6}$/.test(String(payload.pin))) return bad('PIN must be 4 to 6 digits.');
         await sql`INSERT INTO users (name, role, pin_hash)
                   VALUES (${payload.name}, ${payload.role}, ${hashPin(payload.pin)})`;
         await log(me.name, `Added user ${payload.name} (${payload.role})`);
         return ok();
+      }
+
+      case 'resetPin': {
+        if (me.role !== 'ADMIN') return bad('Only an admin can reset a PIN.');
+        if (!/^\d{4,6}$/.test(String(payload.pin))) return bad('PIN must be 4 to 6 digits.');
+        const rows = await sql`SELECT name FROM users WHERE id = ${payload.userId}`;
+        if (!rows[0]) return bad('Staff member not found.');
+        await sql`UPDATE users SET pin_hash = ${hashPin(payload.pin)} WHERE id = ${payload.userId}`;
+        await log(me.name, `Reset PIN for ${rows[0].name}`);
+        return ok();
+      }
+
+      case 'removeUser': {
+        if (me.role !== 'ADMIN') return bad('Only an admin can remove staff.');
+        if (Number(payload.userId) === me.id) return bad('You cannot remove yourself.');
+        const rows = await sql`SELECT name FROM users WHERE id = ${payload.userId}`;
+        await sql`UPDATE users SET is_active = false WHERE id = ${payload.userId}`;
+        await log(me.name, `Removed access for ${rows[0]?.name || payload.userId}`);
+        return ok();
+      }
+
+      case 'bulk': {
+        if (me.role === 'BILLING') return bad('Only a manager or admin can bulk upload.');
+        const rows = Array.isArray(payload.rows) ? payload.rows : [];
+        if (!rows.length) return bad('Nothing to upload.');
+        if (rows.length > 500) return bad('Upload 500 rows at a time or fewer.');
+        let done = 0;
+        for (const r of rows) {
+          const amt = Number(r.amount);
+          if (!(amt > 0)) continue;
+          await sql`
+            INSERT INTO entries (type, biz_date, party_id, amount, mode, category, ref_no, remarks, created_by)
+            VALUES (${r.type}, ${r.date}, ${r.partyId || null}, ${amt}, ${r.mode},
+                    ${r.category || null}, ${r.ref || null}, ${r.remarks || 'bulk upload'}, ${me.name})`;
+          done++;
+        }
+        await log(me.name, `Bulk uploaded ${done} entries`);
+        return NextResponse.json({ ok: true, count: done });
       }
 
       default:
@@ -106,3 +146,13 @@ export async function POST(req) {
 
 const ok = () => NextResponse.json({ ok: true });
 const bad = (msg) => NextResponse.json({ error: msg }, { status: 400 });
+
+// Indian date on the server, whatever timezone the machine runs in.
+const istToday = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+
+function dateAllowed(me, date) {
+  const t = istToday();
+  if (date > t) return 'You cannot enter a future date.';
+  if (me.role === 'BILLING' && date !== t) return 'Billing staff can only enter today. Ask a manager for older dates.';
+  return null;
+}
