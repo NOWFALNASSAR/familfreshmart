@@ -66,13 +66,46 @@ Billing can only enter and close today.
 
 **Change all three on day one.** Owner can add more staff later.
 
+## Version 7 — what changed
+- Today screen shows **cash in hand** and **bank balance** separately. Tap any total to see the entries behind it.
+- Day end has a **cash to bank** box: enter what you deposit, count what remains, difference is judged against that.
+- **Expenses are cash only.** Supplier payments default to cash, UPI still available.
+- **GP is 12% of sales** (adjustable in Settings). Nothing to do with purchase value.
+- Supplier and customer pickers have a **search box**.
+- **Wastage** entry — value thrown, shown against GP.
+- **Opening & investment** entries dated before the start date: opening purchases, own investment,
+  renovation, loans in and out. They never touch the daily drawer.
+- **Stock value** — one figure from a physical count, weekly is enough.
+- **Items and shortage orders**: keep a list of items, pass an order to a supplier, send it on WhatsApp,
+  track ordered versus received.
+- **Purchase bills**: photo, shrunk in the phone before saving.
+
+## Roles
+| | Billing | Manager | Admin |
+|---|---|---|---|
+| Enter today's money | yes | yes | yes |
+| Close the day | yes | yes | yes |
+| Back-date an entry | no | yes | yes |
+| Delete, reopen, bulk upload | no | yes | yes |
+| Opening figures, stock value | no | yes | yes |
+| Settings and staff | no | no | yes |
+
 ## Updating an existing installation
-If your database was created before this version, run `db/migrate-v3.sql` once in the Neon
-SQL Editor. It renames the roles. Skip this on a fresh install — `db/schema.sql` already has them.
+
+Run these once in the Neon SQL Editor, in order, whichever you have not run yet:
+1. `db/migrate-v3.sql` — renames roles to admin / manager / billing.
+2. `db/migrate-v7.sql` — bank, setup entries, items, orders, bills, wastage, stock value.
+Then upload the code. Run the SQL **before** uploading, or the app will error on load.
 
 ## Bulk upload
 Entry → Bulk upload. CSV columns: date, type, party, amount, mode, category, reference.
 See `db/sample-bulk.csv`. Supplier and customer names must already exist in the app.
+
+## Installing on a phone
+Android (Chrome): open the site, menu ⋮ → **Install app** (or Add to Home screen).
+iPhone (Safari only): open the site, Share button → **Add to Home Screen**.
+It then opens full screen with its own icon, no browser bar. Sessions last 12 hours,
+so staff sign in about once a day.
 
 ## What it enforces
 - A closed day cannot be written to — the database itself refuses, not just the screen.
